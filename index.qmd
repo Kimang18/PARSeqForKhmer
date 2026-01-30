@@ -1,0 +1,4 @@
+---
+title: Permuted Language Modeling for Scence Text Recognition
+format: html
+---
