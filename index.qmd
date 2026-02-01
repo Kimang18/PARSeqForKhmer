@@ -100,7 +100,7 @@ This is different from standard AR model where context embedding as the query (_
 ::: {#tbl-panel layout-ncol=4}
 
 |      | $[B]$ | $c_1$   | $c_2$ | $c_3$     |
-|------|-------:|--------:|--------:|--------:|
+|------|------:|--------:|--------:|--------:|
 | $p_1$| 0     | $-\inf$ | $-\inf$ | $-\inf$ |
 | $p_2$| 0     | 0       | $-\inf$ | $-\inf$ |
 | $p_3$| 0     | 0       | 0       | $-\inf$ |
@@ -108,31 +108,31 @@ This is different from standard AR model where context embedding as the query (_
 
 : $[1,2,3]$ {#tbl-first}
 
-|      | $[B]$ | $c_1$ | $c_2$ | $c_3$ |
-|------|-----:|-----:|-----:|-----:|
-| $p_1$| 0    | $-\inf$ | 0 | 0 |
-| $p_2$| 0    | $-\inf$ | $-\inf$ | 0 |
+|      | $[B]$ | $c_1$  | $c_2$   | $c_3$   |
+|------|-----:|--------:|--------:|--------:|
+| $p_1$| 0    | $-\inf$ | 0       | 0       |
+| $p_2$| 0    | $-\inf$ | $-\inf$ | 0       |
 | $p_3$| 0    | $-\inf$ | $-\inf$ | $-\inf$ |
-| $p_4$| 0    | 0    | 0    | 0    |
+| $p_4$| 0    | 0       | 0       | 0       |
 
 : $[3,2,1]$ {#tbl-second}
 
-|      | $[B]$ | $c_1$ | $c_2$ | $c_3$ |
-|------|-----:|-----:|-----:|------:|
-| $p_1$| 0    | $-\inf$ | $-\inf$ | $-\inf$  |
-| $p_2$| 0    | 0    | $-\inf$ | 0 |
-| $p_3$| 0    | 0    | $-\inf$ | $-\inf$ |
-| $p_4$| 0    | 0    | 0    | 0    |
+|      | $[B]$ | $c_1$   | $c_2$   | $c_3$   |
+|------|------:|--------:|--------:|--------:|
+| $p_1$| 0     | $-\inf$ | $-\inf$ | $-\inf$ |
+| $p_2$| 0     | 0       | $-\inf$ | 0       |
+| $p_3$| 0     | 0       | $-\inf$ | $-\inf$ |
+| $p_4$| 0     | 0       | 0       | 0       |
 
 
 : $[1,3,2]$ {#tbl-third}
 
-|      | $[B]$ | $c_1$ | $c_2$ | $c_3$ |
-|------|-----:|-----:|-----:|-----:|
-| $p_1$| 0    | $-\inf$ | 0 | 0  |
-| $p_2$| 0    | $-\inf$ | $-\inf$ | $-\inf$ |
-| $p_3$| 0    | $-\inf$ | 0    | $-\inf$ |
-| $p_4$| 0    | 0    | 0    | 0    |
+|      | $[B]$ | $c_1$   | $c_2$   | $c_3$   |
+|------|------:|--------:|--------:|--------:|
+| $p_1$| 0     | $-\inf$ | 0       | 0       |
+| $p_2$| 0     | $-\inf$ | $-\inf$ | $-\inf$ |
+| $p_3$| 0     | $-\inf$ | 0       | $-\inf$ |
+| $p_4$| 0     | 0       | 0       | 0       |
 
 : $[2,3,1]$ {#tbl-fourth}
 
@@ -197,9 +197,45 @@ class PatchEmbed(nn.Module):
 		return x
 ```
 
+## Image Encoder
+
+To facilitate code readibility, I use encoder layer already implemented in PyTorch for Image Encoder of PARSeq.
+
+```python
+class ImageEncoder(nn.Module):
+	def __init__(self, config):
+		super().__init__()
+		self.config = config
+		self.n_patch = (config.img_size[0] // config.patch_size[0]) * (config.img_size[1] // config.patch_size[1])
+		self.tok_emb = PatchEmbedding(config.n_channel, config.patch_size, config.n_embed)
+		self.pos_emb = nn.Embedding(self.n_patch, config.n_embed)
+		self.dropout = nn.Dropout(config.dropout)
+		self.h = nn.TransformerEncoder(
+			nn.TransformerEncoderLayer(
+				d_model=config.n_embed,
+				nhead=config.n_head,
+				dim_feedforward=2 * config.n_embed,
+				dropout=config.dropout,
+				batch_first=True,
+				norm_first=True,
+				config.bias
+			), config.n_layer
+		)
+		self.ln_f = RMSNorm(config.n_embed)
+	
+	def forward(self, x):
+		b = x.size(0)
+		tok_embed = self.tok_emb(x)
+		pos_embed = self.pos_emb(torch.arange(self.n_patch, dtype=torch.long, device=x.device))
+		x = self.dropout(tok_embed + pos_embed)
+		x = self.h(x)
+		return self.ln_f(x)
+```
+
+
 ## Residual Attention Block
 
-I design this block to self-attention and causal cross-attention.
+I design this block for self-attention and causal cross-attention.
 
 ```python
 import torch.nn as nn
@@ -210,12 +246,11 @@ class ResidualAttentionBlock(nn.Module):
 		self.n_embed = n_embed
 		self.n_head = n_head
 		self.dropout1 = nn.Dropout(dropout)
-		self.ln1 = RMSNorm(n_embed)
 		self.mha = nn.MultiheadAttention(n_embed, n_head, dropout=dropout, bias=bias, batch_first=True)
 		self.dropout2 = nn.Dropout(dropout)
 		self.cross_ln = RMSNorm(n_embed) if cross_attn else None
 		self.cross_mha = nn.MultiheadAttention(n_embed, n_head, dropout=dropout, bias=bias, batch_first=True) if cross_attn else None
-		self.ln2 = RMSNorm(n_embed)
+		self.ln = RMSNorm(n_embed)
 		self.ffn = nn.Sequential(
 			Linear(n_embed, n_mlp, bias=bias),
 			nn.GELU(approximate='tanh'),
@@ -223,49 +258,26 @@ class ResidualAttentionBlock(nn.Module):
 			Linear(n_mlp, n_embed, bias=bias)
 		)
 	
-		def forward(self, x, ctx=None, xi=None, key_mask=None, attn_mask=None):
-			b, t, _ = x.size()
+	def forward(self, x, ctx, xi, key_mask, attn_mask):
+		"""
+		x: normalized query tensor (b, t, n_embed)
+		ctx: normalized context tensor (b, t, n_embed)
+		xi: normalized image feature tensor (b, t, n_embed)
+		"""
+		b, t, _ = x.size()
+		residual = x
+		x, _ = self.mha(query=x, key=ctx, value=ctx, key_padding_mask=key_mask, need_weights=False, attn_mask=attn_mask)
+		x = residual + self.dropout1(x)
+		if self.cross_mha:
 			residual = x
-			x = self.ln1(x)
-			ctx = self.ln1(ctx) if ctx is not None else x
-			x, _ = self.mha(query=x, key=ctx, value=ctx, key_padding_mask=key_mask, need_weights=False, attn_mask=attn_mask)
-			x = residual + self.dropout1(x)
-			if self.cross_mha:
-				residual = x
-				x = self.cross_ln(x)
-				x, _ = self.cross_mha(query=x, key=xi, value=xi, need_weights=False)
-				x = residual + self.dropout2(x)
-			residual = x
-			x = self.ln2(x)
-			x = self.ffn(x)
-			x = residual + x
-			return x
-```
-
-## Image Encoder
-
-```python
-class ImageEncoder(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.n_patch = (config.img_size[0] // config.patch_size[0]) * (config.img_size[1] // config.patch_size[1])
-        self.tok_emb = PatchEmbedding(config.n_channel, config.patch_size, config.n_embed)
-        self.pos_emb = nn.Embedding(self.n_patch, config.n_embed)
-        self.dropout = nn.Dropout(config.dropout)
-        self.h = nn.Sequential(
-            *[ResidualAttentionBlock(config.n_embed, config.n_head, 2 * config.n_embed, config.dropout, config.bias)
-            for _ in range(config.n_layer)]
-        )
-        self.ln_f = RMSNorm(config.n_embed)
-
-    def forward(self, x):
-        b = x.size(0)
-        tok_embed = self.tok_emb(x)
-        pos_embed = self.pos_emb(torch.arange(self.n_patch, dtype=torch.long, device=x.device))
-        x = self.dropout(tok_embed + pos_embed)
-        x = self.h(x)
-        return self.ln_f(x)
+			x = self.cross_ln(x)
+			x, _ = self.cross_mha(query=x, key=xi, value=xi, need_weights=False)
+			x = residual + self.dropout2(x)
+		residual = x
+		x = self.ln(x)
+		x = self.ffn(x)
+		x = residual + x
+		return x
 ```
 
 ## Visio-lingual Dencoder
@@ -326,6 +338,7 @@ class TextDecoder(nn.Module):
         self.n_head = 2 * config.n_head
         self.tok_embed = nn.Embedding(config.vocab_size, config.n_embed)
         self.pos_embed = nn.Embedding(config.block_size, config.n_embed)
+        self.ln_pos = RMSNorm(config.n_embed)
         self.dropout = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList(
             [ResidualAttentionBlock(config.n_embed, self.n_head, 4 * config.n_embed, config.dropout, config.bias, cross_attn=True)
@@ -343,11 +356,13 @@ class TextDecoder(nn.Module):
         pos_embed = self.dropout(self.pos_embed(torch.arange(0, t, device=x.device))) # exclude bos pos
         pos_embed = pos_embed.expand(b, -1, -1) # (b, t, n_embed)
 
-        tok_embed = self.dropout(self.tok_embed(x)) * np.sqrt(self.config.n_embed) # (b, t, n_embed)
+        tok_embed = self.tok_embed(x) * np.sqrt(self.config.n_embed) # (b, t, n_embed)
         bos_embed = tok_embed[:, :1]
 
         ctx = torch.cat([bos_embed, tok_embed[:, 1:] + pos_embed[:, :-1]], dim=1) # start from bos token
+        ctx = self.dropout(F.rms_norm(ctx, (ctx.size(-1), ))) # (b, t, n_embed)
 
+        pos_embed = self.dropout(self.ln_pos(pos_embed))
         if targets is not None:
             key_mask = torch.zeros((b, t), device=x.device)
             key_mask[targets < 0] = float('-inf')
